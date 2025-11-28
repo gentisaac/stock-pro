@@ -221,7 +221,7 @@ if run_btn:
         df_pool = df_pool.sort_values(by="總分", ascending=False).head(10)
         
         # 先顯示一個總表
-        st.dataframe(df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn'), use_container_width=True)
+        st.dataframe(df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), use_container_width=True)
         st.write("") # 空行
 
         # 顯示個別卡片
