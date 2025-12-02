@@ -264,4 +264,78 @@ def render_stock_card(row, mode="scan"):
             
         colors = ['red' if r['Open'] > r['Close'] else 'green' for k, r in df.iterrows()]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
-        fig.update_
+        fig.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+
+# --- 主程式邏輯 ---
+if run_btn:
+    
+    # 1. 持股診斷
+    if custom_tickers:
+        st.header(f"💼 我的持股診斷 ({len(custom_tickers)})")
+        with st.spinner("診斷中..."):
+            for t in custom_tickers:
+                res = analyze_stock(t)
+                if res: render_stock_card(res, mode="portfolio")
+
+    # 2. 市場掃描
+    if scan_mode != "不掃描 (只看持股)" and pool_tickers:
+        st.header(f"🏆 {scan_mode} 潛力買點掃描")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        buy_list = []
+        watch_list = []
+        
+        total = len(pool_tickers)
+        for i, t in enumerate(pool_tickers):
+            progress_bar.progress((i + 1) / total)
+            status_text.text(f"掃描中 ({i+1}/{total}): {t} ...")
+            
+            if t in custom_tickers: continue 
+            
+            res = analyze_stock(t)
+            if res:
+                if "進場" in res['訊號'] or "接血" in res['訊號']:
+                    buy_list.append(res)
+                elif res['總分'] >= 10:
+                    watch_list.append(res)
+        
+        progress_bar.empty()
+        status_text.empty()
+
+        # A. 直接進場區 (新增 低於L2幅度 欄位)
+        if buy_list:
+            st.markdown("### 🟢 可進場標的 (現價低於 L2)")
+            df_buy = pd.DataFrame(buy_list).sort_values(by="總分", ascending=False)
+            
+            # 格式化顯示：把小數點變成百分比字串，方便閱讀
+            df_buy['低於L2幅度'] = df_buy['L2乖離'].apply(lambda x: f"{x:.2f}%")
+            
+            st.dataframe(
+                df_buy[['代號', '現價', '總分', '低於L2幅度', 'L2搶跑價', 'L3接血價', 'RSI', 'KD', '量能']], 
+                use_container_width=True,
+                hide_index=True 
+            )
+            
+            for index, row in df_buy.iterrows():
+                render_stock_card(row, mode="scan")
+        
+        # B. 高分觀察區
+        if watch_list:
+            st.markdown("### 📊 高分潛力 Top 10 (總分 >= 10)")
+            df_watch = pd.DataFrame(watch_list).sort_values(by="總分", ascending=False).head(10)
+            st.dataframe(
+                df_watch[['代號', '現價', '總分', 'L2搶跑價', 'RSI', 'KD', '量能']], 
+                use_container_width=True,
+                hide_index=True
+            )
+        
+        if not buy_list and not watch_list:
+            st.warning("掃描完成，無符合條件的標的。")
+
+else:
+    st.info("👈 請在左側輸入持股，並點擊「🚀 開始分析」按鈕。")
