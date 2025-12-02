@@ -9,15 +9,15 @@ import requests
 # --- 頁面設定 ---
 st.set_page_config(page_title="第二層思維戰情室 Ultimate", layout="wide", page_icon="🦅")
 
-st.title("🦅 第二層思維搶跑戰情室 Ultimate")
+st.title("🦅 第二層思維搶跑戰情室 V8.0")
 st.markdown("""
 **核心策略：** 尋找市場恐慌、乖離過大、但主力在關鍵支撐位（L2）有防守跡象的標的。
 * **L1 (大眾):** 均線安全區
-* **L2 (搶跑):** 我們的主戰場 (極窄止損)
-* **L3 (接血):** **(極端警報)** 防範主力獵殺止損的更深點位，若現價低於此，代表機會與風險並存。
+* **L2 (搶跑):** **(實戰進場點)** 現價低於此價位即可分批佈局。
+* **L3 (接血):** **(極端警報)** 主力獵殺止損區，若跌破此處代表恐慌極致。
 """)
 
-# --- 獲取指數成分股函數 ---
+# --- 獲取指數成分股函數 (含強力備援) ---
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -27,8 +27,9 @@ def get_sp500_tickers():
         dfs = pd.read_html(r.text)
         for df in dfs:
             if 'Symbol' in df.columns: return df['Symbol'].tolist()
-        return []
-    except: return []
+        return ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B", "LLY", "V", "JPM", "XOM", "WMT", "UNH", "MA", "PG", "JNJ", "HD", "MRK", "COST", "ABBV", "CVX", "CRM", "BAC", "KO"] # Fallback
+    except:
+        return ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA"] # Fallback
 
 @st.cache_data(ttl=3600)
 def get_nasdaq100_tickers():
@@ -40,15 +41,16 @@ def get_nasdaq100_tickers():
         for df in dfs:
             if 'Ticker' in df.columns: return df['Ticker'].tolist()
             elif 'Symbol' in df.columns: return df['Symbol'].tolist()
-        return []
-    except: return []
+        return ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "AVGO", "ASML", "COST", "PEP", "CSCO", "NFLX", "AMD", "ADBE", "TMUS", "INTC", "QCOM", "TXN", "AMGN", "HON", "INTU", "BKNG"] # Fallback
+    except:
+        return ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA"]
 
 # --- 側邊欄設定 ---
 st.sidebar.header("⚙️ 掃描設定")
 
 # 自選清單
 st.sidebar.subheader("👑 我的自選 (必看)")
-default_custom = "NVDA, TSLA, MSTR, SMR"
+default_custom = "NVDA, TSLA, MSTR, SMR, PLTR"
 user_custom_str = st.sidebar.text_area("輸入代號", default_custom, height=70)
 custom_tickers = [x.strip().upper() for x in user_custom_str.split(',') if x.strip()]
 
@@ -69,12 +71,10 @@ if scan_mode == "手動輸入清單":
 elif scan_mode == "S&P 500 成分股 (約3分鐘)":
     with st.sidebar.status("下載 S&P 500 名單中..."):
         pool_tickers = get_sp500_tickers()
-        if not pool_tickers: pool_tickers = ["AAPL", "MSFT", "NVDA"] # Fallback
         st.write(f"取得 {len(pool_tickers)} 檔")
 elif scan_mode == "Nasdaq 100 成分股 (約1分鐘)":
     with st.sidebar.status("下載 Nasdaq 100 名單中..."):
         pool_tickers = get_nasdaq100_tickers()
-        if not pool_tickers: pool_tickers = ["AAPL", "MSFT", "NVDA"] # Fallback
         st.write(f"取得 {len(pool_tickers)} 檔")
 
 run_btn = st.sidebar.button("🚀 開始掃描", type="primary")
@@ -152,12 +152,18 @@ def analyze_stock(t):
         std20 = df['Close'].rolling(20).std().iloc[-1]
         recent_low = df['Low'].tail(10).min()
         l2_entry = max(sma20 - 2*std20, recent_low * 1.005)
-        
-        # 定義 L3 接血價 (前低之下 2.5%)
         l3_entry = recent_low * 0.975
         
+        # 狀態標記
+        status = ""
+        if curr['Close'] <= l3_entry: status = "🚨接血"
+        elif curr['Close'] <= l2_entry: status = "🟢可進場"
+        
         return {
-            "代號": t, "現價": round(curr['Close'], 2), "總分": total_score,
+            "代號": t, 
+            "狀態": status, # 新增狀態欄位
+            "現價": round(curr['Close'], 2), 
+            "總分": total_score,
             "RSI": round(curr['RSI'], 1), "RSI分": s_rsi,
             "KD": round(curr['K'], 1), "KD分": s_kd,
             "量能倍數": round(vol_ratio, 1), "量能分": s_vol,
@@ -168,19 +174,25 @@ def analyze_stock(t):
         }
     except: return None
 
-def render_stock_card(row, is_alert=False):
+def render_stock_card(row, alert_type="normal"):
     t = row['代號']
+    status = row['狀態']
     
-    # 警報區特別樣式
-    if is_alert:
-        st.error(f"🚨 **{t}** 目前現價 {row['現價']} 已低於 L3 接血價 {row['L3接血價']}！")
+    # 標題區塊
+    if alert_type == "L3":
+        st.error(f"🚨 **{t}** 崩盤警報！現價 {row['現價']} 已跌破 L3 接血價！")
+    elif alert_type == "L2":
+        st.success(f"🟢 **{t}** 買點浮現！現價 {row['現價']} 已低於 L2 搶跑價。")
     
     col1, col2 = st.columns([3, 1])
     
     with col2:
-        if not is_alert: st.markdown(f"### {t}")
+        if alert_type == "normal": st.markdown(f"### {t}")
+        
+        # 分數顯示
         score = row['總分']
-        st.metric("綜合評分", f"{score} / 20", delta="🔥 強烈訊號" if score>=14 else None)
+        st.metric("綜合評分", f"{score} / 20", delta=status if status else None)
+        
         st.write("---")
         st.markdown(f"**🟢 L2 進場:** `{row['L2搶跑價']}`")
         st.markdown(f"**🔴 嚴格止損:** `{row['止損價']}`")
@@ -217,7 +229,7 @@ if run_btn:
         with st.spinner("分析自選股中..."):
             for t in custom_tickers:
                 res = analyze_stock(t)
-                if res: render_stock_card(res)
+                if res: render_stock_card(res, alert_type="L2" if res['狀態'] else "normal")
 
     # 2. 市場掃描
     if pool_tickers:
@@ -226,8 +238,10 @@ if run_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        pool_results = []
-        l3_alerts = [] # L3 警報清單
+        # 分類清單
+        l3_list = []      # 跌破 L3
+        l2_list = []      # 跌破 L2
+        high_score_list = [] # 單純高分
         
         total = len(pool_tickers)
         
@@ -239,50 +253,63 @@ if run_btn:
             
             res = analyze_stock(t)
             if res:
-                # 邏輯 A: 檢查是否觸發 L3 警報 (只要價格低於 L3，不管幾分都列出來)
+                # 邏輯分流
                 if res['現價'] <= res['L3接血價']:
-                    l3_alerts.append(res)
+                    l3_list.append(res)
+                elif res['現價'] <= res['L2搶跑價']:
+                    l2_list.append(res)
                 
-                # 邏輯 B: 檢查是否進入 Top 10 排行 (依舊維持 10分門檻)
-                if res['總分'] >= 10: 
-                    pool_results.append(res)
+                # 只要分數夠高，也放入觀察名單 (但不重複放 L3/L2 的)
+                if res['總分'] >= 10:
+                    high_score_list.append(res)
         
         progress_bar.empty()
         status_text.empty()
 
-        # --- A. 先顯示 L3 警報 (最重要) ---
-        if l3_alerts:
-            st.markdown("### 🚨 L3 崩盤極限警報 (目前價格已低於接血區)")
-            st.info("以下標的已跌破主力獵殺區 (L3)，屬於極端左側交易機會，請注意風險。")
-            for row in l3_alerts:
-                render_stock_card(row, is_alert=True)
-        
-        # --- B. 再顯示 Top 10 排行 ---
-        if pool_results:
-            st.markdown(f"### 📊 高分潛力 Top 10 (總分 >= 10)")
-            df_pool = pd.DataFrame(pool_results)
+        # === 區塊 1: L3 極限警報 ===
+        if l3_list:
+            st.markdown("### 🚨 L3 崩盤極限警報 (帶血籌碼)")
+            for row in l3_list:
+                render_stock_card(row, alert_type="L3")
+
+        # === 區塊 2: L2 直接進場 Top 10 (依照總分排序) ===
+        if l2_list:
+            st.markdown("### 🟢 L2 直接進場 Top 10 (現價已低於買點)")
+            st.info("以下標的雖然未跌到 L3，但已進入 L2 搶跑區，且依照綜合評分排序，是勝率較高的選擇。")
+            
+            df_l2 = pd.DataFrame(l2_list)
+            df_l2 = df_l2.sort_values(by="總分", ascending=False).head(10)
+            
+            # 表格顯示 (隱藏 index, 顯示狀態)
+            st.dataframe(
+                df_l2.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), 
+                use_container_width=True
+            )
+            
+            for index, row in df_l2.iterrows():
+                # 避免跟 L3 重複顯示
+                if row['代號'] not in [x['代號'] for x in l3_list]:
+                    render_stock_card(row, alert_type="L2")
+
+        # === 區塊 3: 高分潛力 Top 10 (不一定能買，但值得看) ===
+        if high_score_list:
+            st.markdown("### 📊 高分潛力觀察名單 Top 10 (總分 >= 10)")
+            st.caption("此區為恐慌分數高的標的，但價格未必已跌破 L2，請耐心等待價格落入區間。")
+            
+            df_pool = pd.DataFrame(high_score_list)
             df_pool = df_pool.sort_values(by="總分", ascending=False).head(10)
             
             st.dataframe(
                 df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), 
                 use_container_width=True
             )
-            st.write("")
-
-            for index, row in df_pool.iterrows():
-                # 如果已經在上面警報區顯示過了，這裡就跳過，避免重複
-                is_duplicate = False
-                for alert in l3_alerts:
-                    if alert['代號'] == row['代號']: is_duplicate = True
-                
-                if not is_duplicate:
-                    render_stock_card(row)
+            # 這裡不顯示圖卡，以免頁面太長，圖卡只留給 L3 和 L2 這些能動作的
         
-        if not l3_alerts and not pool_results:
-            st.warning("掃描完成。目前沒有觸發 L3 警報，也沒有 10 分以上的高恐慌標的。")
+        if not l3_list and not l2_list and not high_score_list:
+            st.warning("掃描完成。目前市場情緒平穩，沒有觸發任何策略信號。")
             
     elif not pool_tickers and scan_mode != "手動輸入清單":
-        st.error("無法下載成分股名單，請稍後再試。")
+        st.error("無法下載成分股名單，將使用內建備用清單進行掃描。")
         
 else:
     st.info("👈 請在左側選擇掃描範圍，並點擊「🚀 開始掃描」按鈕。")
