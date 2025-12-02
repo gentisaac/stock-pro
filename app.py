@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests # 新增這個庫來做偽裝
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="第二層思維戰情室 Ultimate", layout="wide", page_icon="🦅")
@@ -16,27 +17,46 @@ st.markdown("""
 * **L3 (接血):** 防範主力獵殺止損的更深點位
 """)
 
-# --- 獲取指數成分股函數 ---
-@st.cache_data(ttl=3600) # 快取1小時，避免重複抓取
+# --- 獲取指數成分股函數 (V6.0 強力修正版) ---
+@st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        df = pd.read_html(url)[0]
-        return df['Symbol'].tolist()
-    except:
+        # 偽裝成瀏覽器，避免被擋
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        r = requests.get(url, headers=headers)
+        
+        # 使用 Pandas 讀取 HTML
+        dfs = pd.read_html(r.text)
+        
+        # 自動尋找包含 'Symbol' 欄位的表格
+        for df in dfs:
+            if 'Symbol' in df.columns:
+                return df['Symbol'].tolist()
+        return []
+    except Exception as e:
+        print(f"S&P 500 下載失敗: {e}")
         return []
 
 @st.cache_data(ttl=3600)
 def get_nasdaq100_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
-        df = pd.read_html(url)[4] # Wikipedia 表格索引可能會變，通常是第4或第5個
-        # 簡單的容錯處理
-        if 'Ticker' not in df.columns and 'Symbol' not in df.columns:
-             df = pd.read_html(url)[3]
-        col = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
-        return df[col].tolist()
-    except:
+        # 偽裝成瀏覽器
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        r = requests.get(url, headers=headers)
+        
+        dfs = pd.read_html(r.text)
+        
+        # 自動尋找包含 'Ticker' 或 'Symbol' 的表格
+        for df in dfs:
+            if 'Ticker' in df.columns:
+                return df['Ticker'].tolist()
+            elif 'Symbol' in df.columns:
+                return df['Symbol'].tolist()
+        return []
+    except Exception as e:
+        print(f"Nasdaq 100 下載失敗: {e}")
         return []
 
 # --- 側邊欄設定 ---
@@ -64,13 +84,21 @@ if scan_mode == "手動輸入清單":
     user_pool_str = st.sidebar.text_area("輸入掃描清單", default_pool, height=150)
     pool_tickers = [x.strip().upper() for x in user_pool_str.split(',') if x.strip()]
 elif scan_mode == "S&P 500 成分股 (約3分鐘)":
-    with st.sidebar.status("正在下載 S&P 500 名單..."):
+    with st.sidebar.status("正在下載 S&P 500 名單 (透過偽裝請求)..."):
         pool_tickers = get_sp500_tickers()
-        st.write(f"成功取得 {len(pool_tickers)} 檔標的")
+        if pool_tickers:
+            st.write(f"✅ 成功取得 {len(pool_tickers)} 檔標的")
+        else:
+            st.error("❌ 下載失敗，將使用備用清單")
+            pool_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B", "LLY", "V"] # 備用
 elif scan_mode == "Nasdaq 100 成分股 (約1分鐘)":
-    with st.sidebar.status("正在下載 Nasdaq 100 名單..."):
+    with st.sidebar.status("正在下載 Nasdaq 100 名單 (透過偽裝請求)..."):
         pool_tickers = get_nasdaq100_tickers()
-        st.write(f"成功取得 {len(pool_tickers)} 檔標的")
+        if pool_tickers:
+            st.write(f"✅ 成功取得 {len(pool_tickers)} 檔標的")
+        else:
+            st.error("❌ 下載失敗，將使用備用清單")
+            pool_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AVGO", "PEP", "COST"] # 備用
 
 run_btn = st.sidebar.button("🚀 開始掃描", type="primary")
 
@@ -161,7 +189,7 @@ def analyze_stock(t):
             "L2搶跑價": round(l2_entry, 2),
             "止損價": round(recent_low * 0.985, 2),
             "L3接血價": round(recent_low * 0.975, 2),
-            "Data": df.tail(40) # 畫圖只傳最後40天，節省記憶體
+            "Data": df.tail(40)
         }
     except:
         return None
@@ -212,30 +240,24 @@ if run_btn:
                 res = analyze_stock(t)
                 if res: render_stock_card(res)
 
-    # 2. 處理市場掃描 (耗時)
+    # 2. 處理市場掃描
     if pool_tickers:
         st.header(f"🏆 {scan_mode} 高分 Top 10 (分數 >= 10)")
         
-        # 顯示進度條
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         pool_results = []
-        
-        # 為了效率，如果清單太多，我們需要顯示剩餘時間估算
         total = len(pool_tickers)
         
         for i, t in enumerate(pool_tickers):
-            # 更新進度
             progress_bar.progress((i + 1) / total)
             status_text.text(f"正在掃描 ({i+1}/{total}): {t} ...")
             
-            # 自選的已經顯示過，跳過不重複算
             if t in custom_tickers: continue 
             
             res = analyze_stock(t)
             if res:
-                # === 關鍵修改：只保留總分 >= 10 的 ===
                 if res['總分'] >= 10: 
                     pool_results.append(res)
         
@@ -243,25 +265,22 @@ if run_btn:
         status_text.empty()
 
         if pool_results:
-            # 排序並取前 10
             df_pool = pd.DataFrame(pool_results)
             df_pool = df_pool.sort_values(by="總分", ascending=False).head(10)
             
-            # 顯示總表 (隱藏無用索引)
             st.dataframe(
                 df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), 
                 use_container_width=True
             )
             st.write("")
 
-            # 顯示卡片
             for index, row in df_pool.iterrows():
                 render_stock_card(row, is_top10=True)
         else:
-            st.warning("🔎 掃描完成！但目前市場上沒有任何 S&P 500 成分股達到「10分」以上的恐慌標準。這可能代表目前市場情緒偏向樂觀或平穩，建議觀望或關注您的自選股。")
+            st.warning("🔎 掃描完成！但目前市場上沒有任何成分股達到「10分」以上的恐慌標準。")
             
     elif not pool_tickers and scan_mode != "手動輸入清單":
-        st.error("無法下載成分股名單，請檢查網路或稍後再試。")
+        st.error("無法下載成分股名單，可能是 Wikipedia 暫時阻擋連線。請稍後再試，或使用手動輸入清單。")
         
 else:
     st.info("👈 請在左側選擇掃描範圍，並點擊「🚀 開始掃描」按鈕。")
