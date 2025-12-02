@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="第二層思維戰情室 Pro", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="第二層思維戰情室 Ultimate", layout="wide", page_icon="🦅")
 
-st.title("🦅 第二層思維搶跑戰情室 Pro")
+st.title("🦅 第二層思維搶跑戰情室 Ultimate")
 st.markdown("""
 **核心策略：** 尋找市場恐慌、乖離過大、但主力在關鍵支撐位（L2）有防守跡象的標的。
 * **L1 (大眾):** 均線安全區
@@ -16,22 +16,63 @@ st.markdown("""
 * **L3 (接血):** 防範主力獵殺止損的更深點位
 """)
 
-# --- 側邊欄設定 ---
-st.sidebar.header("⚙️ 戰情室設定")
+# --- 獲取指數成分股函數 ---
+@st.cache_data(ttl=3600) # 快取1小時，避免重複抓取
+def get_sp500_tickers():
+    try:
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        df = pd.read_html(url)[0]
+        return df['Symbol'].tolist()
+    except:
+        return []
 
-# 1. 自選清單輸入區
-st.sidebar.subheader("👑 我的自選關注 (必看)")
-default_custom = "NVDA, TSLA, MSTR"
-user_custom_str = st.sidebar.text_area("輸入代號 (無論分數高低都會顯示)", default_custom, height=80)
+@st.cache_data(ttl=3600)
+def get_nasdaq100_tickers():
+    try:
+        url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+        df = pd.read_html(url)[4] # Wikipedia 表格索引可能會變，通常是第4或第5個
+        # 簡單的容錯處理
+        if 'Ticker' not in df.columns and 'Symbol' not in df.columns:
+             df = pd.read_html(url)[3]
+        col = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
+        return df[col].tolist()
+    except:
+        return []
+
+# --- 側邊欄設定 ---
+st.sidebar.header("⚙️ 掃描設定")
+
+# 1. 自選清單
+st.sidebar.subheader("👑 我的自選 (必看)")
+default_custom = "NVDA, TSLA, MSTR, SMR"
+user_custom_str = st.sidebar.text_area("輸入代號", default_custom, height=70)
 custom_tickers = [x.strip().upper() for x in user_custom_str.split(',') if x.strip()]
 
-# 2. 系統掃描池輸入區
-st.sidebar.subheader("🔍 市場掃描池 (選Top 10)")
-default_pool = "AAPL, AMD, META, AMZN, MSFT, GOOGL, NFLX, COIN, MARA, PLTR, SOFI, UBER, DIS, PYPL, SQ, SHOP, GME, HOOD, AFRM, UPST, RIOT, CLSK"
-user_pool_str = st.sidebar.text_area("輸入掃描範圍 (只顯示高分前10名)", default_pool, height=150)
-pool_tickers = [x.strip().upper() for x in user_pool_str.split(',') if x.strip()]
+st.sidebar.divider()
 
-run_btn = st.sidebar.button("🚀 更新戰情數據", type="primary")
+# 2. 掃描模式選擇
+st.sidebar.subheader("🔍 全市場掃描模式")
+scan_mode = st.sidebar.radio(
+    "選擇掃描範圍:",
+    ("手動輸入清單", "S&P 500 成分股 (約3分鐘)", "Nasdaq 100 成分股 (約1分鐘)")
+)
+
+pool_tickers = []
+
+if scan_mode == "手動輸入清單":
+    default_pool = "AAPL, AMD, META, AMZN, MSFT, GOOGL, NFLX, COIN, MARA, PLTR, SOFI, UBER, DIS, PYPL, SQ, SHOP, GME, HOOD, AFRM, UPST, RIOT, CLSK"
+    user_pool_str = st.sidebar.text_area("輸入掃描清單", default_pool, height=150)
+    pool_tickers = [x.strip().upper() for x in user_pool_str.split(',') if x.strip()]
+elif scan_mode == "S&P 500 成分股 (約3分鐘)":
+    with st.sidebar.status("正在下載 S&P 500 名單..."):
+        pool_tickers = get_sp500_tickers()
+        st.write(f"成功取得 {len(pool_tickers)} 檔標的")
+elif scan_mode == "Nasdaq 100 成分股 (約1分鐘)":
+    with st.sidebar.status("正在下載 Nasdaq 100 名單..."):
+        pool_tickers = get_nasdaq100_tickers()
+        st.write(f"成功取得 {len(pool_tickers)} 檔標的")
+
+run_btn = st.sidebar.button("🚀 開始掃描", type="primary")
 
 # --- 核心計算函數 ---
 def calculate_indicators(df):
@@ -88,14 +129,14 @@ def get_score(value, type_, hist_current=0, hist_min=0):
 
 def analyze_stock(t):
     try:
-        df = yf.download(t, period="60d", interval="1d", progress=False)
+        # 下載數據，縮短週期以加快大量掃描的速度
+        df = yf.download(t, period="50d", interval="1d", progress=False)
         if df.empty or len(df) < 20: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
         df = calculate_indicators(df)
         curr = df.iloc[-1]
         
-        # 簡單檢查數據完整性
         if pd.isna(curr.get('K')) or pd.isna(curr.get('RSI')): return None
 
         vol_ratio = curr['Volume'] / df['Volume'].mean()
@@ -120,7 +161,7 @@ def analyze_stock(t):
             "L2搶跑價": round(l2_entry, 2),
             "止損價": round(recent_low * 0.985, 2),
             "L3接血價": round(recent_low * 0.975, 2),
-            "Data": df.tail(45)
+            "Data": df.tail(40) # 畫圖只傳最後40天，節省記憶體
         }
     except:
         return None
@@ -131,20 +172,13 @@ def render_stock_card(row, is_top10=False):
     
     with col2:
         st.markdown(f"### {t}")
-        # 分數顏色標示
         score = row['總分']
-        color = "normal"
-        if score >= 12: color = "off" # Streamlit metric color limitation workaround
-        
         st.metric("綜合評分", f"{score} / 20", delta="🔥 強烈訊號" if score>=14 else None)
-        
         st.write("---")
         st.markdown(f"**🟢 L2 進場:** `{row['L2搶跑價']}`")
         st.markdown(f"**🔴 嚴格止損:** `{row['止損價']}`")
         st.markdown(f"**🟣 L3 接血:** `{row['L3接血價']}`")
         st.write("---")
-        
-        # 指標詳細
         st.caption(f"RSI: {row['RSI']} ({row['RSI分']}分)")
         st.caption(f"KD: {row['KD']} ({row['KD分']}分)")
         st.caption(f"量能: {row['量能倍數']}倍 ({row['量能分']}分)")
@@ -154,7 +188,6 @@ def render_stock_card(row, is_top10=False):
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name=t), row=1, col=1)
         
-        # 畫線
         fig.add_hline(y=row['L2搶跑價'], line_width=2, line_dash="dash", line_color="#00FF00", row=1, col=1)
         fig.add_hline(y=row['止損價'], line_width=2, line_color="#FF0000", row=1, col=1)
         fig.add_hline(y=row['L3接血價'], line_width=2, line_dash="dot", line_color="purple", row=1, col=1)
@@ -164,72 +197,72 @@ def render_stock_card(row, is_top10=False):
         
         y_min = min(df['Low'].min(), row['L3接血價']) * 0.98
         y_max = df['High'].max() * 1.02
-        fig.update_layout(height=400, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, xaxis_rangeslider_visible=False, yaxis=dict(range=[y_min, y_max]))
+        fig.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, xaxis_rangeslider_visible=False, yaxis=dict(range=[y_min, y_max]))
         st.plotly_chart(fig, use_container_width=True)
     
     st.divider()
 
 # --- 主程式邏輯 ---
 if run_btn:
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    # 1. 處理自選清單
-    custom_results = []
+    # 1. 處理自選清單 (優先執行)
     if custom_tickers:
-        status_text.text("正在分析自選清單...")
-        for i, t in enumerate(custom_tickers):
-            res = analyze_stock(t)
-            if res: custom_results.append(res)
-    
-    # 2. 處理市場掃描
-    pool_results = []
+        st.header(f"👑 我的自選關注 ({len(custom_tickers)})")
+        with st.spinner("分析自選股中..."):
+            for t in custom_tickers:
+                res = analyze_stock(t)
+                if res: render_stock_card(res)
+
+    # 2. 處理市場掃描 (耗時)
     if pool_tickers:
+        st.header(f"🏆 {scan_mode} 高分 Top 10 (分數 >= 10)")
+        
+        # 顯示進度條
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        pool_results = []
+        
+        # 為了效率，如果清單太多，我們需要顯示剩餘時間估算
+        total = len(pool_tickers)
+        
         for i, t in enumerate(pool_tickers):
-            # 進度條計算
-            progress = (i + 1) / len(pool_tickers)
-            progress_bar.progress(progress)
-            status_text.text(f"正在掃描市場: {t} ...")
+            # 更新進度
+            progress_bar.progress((i + 1) / total)
+            status_text.text(f"正在掃描 ({i+1}/{total}): {t} ...")
             
-            # 避免重複：如果已經在自選清單裡有了，掃描池就跳過，節省資源
+            # 自選的已經顯示過，跳過不重複算
             if t in custom_tickers: continue 
             
             res = analyze_stock(t)
-            if res: pool_results.append(res)
-
-    progress_bar.empty()
-    status_text.empty()
-
-    # --- 顯示結果 ---
-    
-    # A. 自選區塊
-    if custom_results:
-        st.header(f"👑 我的自選關注 ({len(custom_results)})")
-        st.info("這裡是您指定的觀察標的，無論分數高低皆顯示。")
-        for row in custom_results:
-            render_stock_card(row)
-    elif custom_tickers:
-        st.warning("⚠️ 自選清單中的股票數據抓取失敗，請檢查代號是否正確。")
-
-    # B. 系統推薦區塊
-    if pool_results:
-        st.header("🏆 系統掃描高分 Top 10")
-        st.info("系統根據「恐慌度」與「超賣指標」篩選出的最佳搶跑機會。")
+            if res:
+                # === 關鍵修改：只保留總分 >= 10 的 ===
+                if res['總分'] >= 10: 
+                    pool_results.append(res)
         
-        # 排序並取前 10
-        df_pool = pd.DataFrame(pool_results)
-        df_pool = df_pool.sort_values(by="總分", ascending=False).head(10)
-        
-        # 先顯示一個總表
-        st.dataframe(df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), use_container_width=True)
-        st.write("") # 空行
+        progress_bar.empty()
+        status_text.empty()
 
-        # 顯示個別卡片
-        for index, row in df_pool.iterrows():
-            render_stock_card(row, is_top10=True)
+        if pool_results:
+            # 排序並取前 10
+            df_pool = pd.DataFrame(pool_results)
+            df_pool = df_pool.sort_values(by="總分", ascending=False).head(10)
             
-    elif pool_tickers:
-        st.warning("市場掃描池沒有返回數據。")
+            # 顯示總表 (隱藏無用索引)
+            st.dataframe(
+                df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), 
+                use_container_width=True
+            )
+            st.write("")
+
+            # 顯示卡片
+            for index, row in df_pool.iterrows():
+                render_stock_card(row, is_top10=True)
+        else:
+            st.warning("🔎 掃描完成！但目前市場上沒有任何 S&P 500 成分股達到「10分」以上的恐慌標準。這可能代表目前市場情緒偏向樂觀或平穩，建議觀望或關注您的自選股。")
+            
+    elif not pool_tickers and scan_mode != "手動輸入清單":
+        st.error("無法下載成分股名單，請檢查網路或稍後再試。")
         
 else:
-    st.info("👈 請在左側輸入您關注的股票，並點擊「🚀 更新戰情數據」按鈕。")
+    st.info("👈 請在左側選擇掃描範圍，並點擊「🚀 開始掃描」按鈕。")
+    st.caption("注意：掃描 S&P 500 全成分股可能需要 3-5 分鐘，請耐心等待。")
