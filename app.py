@@ -162,4 +162,127 @@ def analyze_stock(t):
             "KD": round(curr['K'], 1), "KD分": s_kd,
             "量能倍數": round(vol_ratio, 1), "量能分": s_vol,
             "L2搶跑價": round(l2_entry, 2),
-            "止損價": round(recent_low * 0.985,
+            "止損價": round(recent_low * 0.985, 2),
+            "L3接血價": round(l3_entry, 2),
+            "Data": df.tail(40)
+        }
+    except: return None
+
+def render_stock_card(row, is_alert=False):
+    t = row['代號']
+    
+    # 警報區特別樣式
+    if is_alert:
+        st.error(f"🚨 **{t}** 目前現價 {row['現價']} 已低於 L3 接血價 {row['L3接血價']}！")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col2:
+        if not is_alert: st.markdown(f"### {t}")
+        score = row['總分']
+        st.metric("綜合評分", f"{score} / 20", delta="🔥 強烈訊號" if score>=14 else None)
+        st.write("---")
+        st.markdown(f"**🟢 L2 進場:** `{row['L2搶跑價']}`")
+        st.markdown(f"**🔴 嚴格止損:** `{row['止損價']}`")
+        st.markdown(f"**🟣 L3 接血:** `{row['L3接血價']}`")
+        st.write("---")
+        st.caption(f"RSI: {row['RSI']} ({row['RSI分']}分)")
+        st.caption(f"KD: {row['KD']} ({row['KD分']}分)")
+        st.caption(f"量能: {row['量能倍數']}倍 ({row['量能分']}分)")
+
+    with col1:
+        df = row['Data']
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name=t), row=1, col=1)
+        
+        fig.add_hline(y=row['L2搶跑價'], line_width=2, line_dash="dash", line_color="#00FF00", row=1, col=1)
+        fig.add_hline(y=row['止損價'], line_width=2, line_color="#FF0000", row=1, col=1)
+        fig.add_hline(y=row['L3接血價'], line_width=2, line_dash="dot", line_color="purple", row=1, col=1)
+        
+        colors = ['red' if r['Open'] > r['Close'] else 'green' for k, r in df.iterrows()]
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
+        
+        y_min = min(df['Low'].min(), row['L3接血價']) * 0.98
+        y_max = df['High'].max() * 1.02
+        fig.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, xaxis_rangeslider_visible=False, yaxis=dict(range=[y_min, y_max]))
+        st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+
+# --- 主程式邏輯 ---
+if run_btn:
+    # 1. 自選清單
+    if custom_tickers:
+        st.header(f"👑 我的自選關注 ({len(custom_tickers)})")
+        with st.spinner("分析自選股中..."):
+            for t in custom_tickers:
+                res = analyze_stock(t)
+                if res: render_stock_card(res)
+
+    # 2. 市場掃描
+    if pool_tickers:
+        st.header(f"🏆 {scan_mode} 掃描結果")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        pool_results = []
+        l3_alerts = [] # L3 警報清單
+        
+        total = len(pool_tickers)
+        
+        for i, t in enumerate(pool_tickers):
+            progress_bar.progress((i + 1) / total)
+            status_text.text(f"掃描中 ({i+1}/{total}): {t} ...")
+            
+            if t in custom_tickers: continue 
+            
+            res = analyze_stock(t)
+            if res:
+                # 邏輯 A: 檢查是否觸發 L3 警報 (只要價格低於 L3，不管幾分都列出來)
+                if res['現價'] <= res['L3接血價']:
+                    l3_alerts.append(res)
+                
+                # 邏輯 B: 檢查是否進入 Top 10 排行 (依舊維持 10分門檻)
+                if res['總分'] >= 10: 
+                    pool_results.append(res)
+        
+        progress_bar.empty()
+        status_text.empty()
+
+        # --- A. 先顯示 L3 警報 (最重要) ---
+        if l3_alerts:
+            st.markdown("### 🚨 L3 崩盤極限警報 (目前價格已低於接血區)")
+            st.info("以下標的已跌破主力獵殺區 (L3)，屬於極端左側交易機會，請注意風險。")
+            for row in l3_alerts:
+                render_stock_card(row, is_alert=True)
+        
+        # --- B. 再顯示 Top 10 排行 ---
+        if pool_results:
+            st.markdown(f"### 📊 高分潛力 Top 10 (總分 >= 10)")
+            df_pool = pd.DataFrame(pool_results)
+            df_pool = df_pool.sort_values(by="總分", ascending=False).head(10)
+            
+            st.dataframe(
+                df_pool.drop(columns=["Data"]).style.background_gradient(subset=['總分'], cmap='RdYlGn').hide(axis="index"), 
+                use_container_width=True
+            )
+            st.write("")
+
+            for index, row in df_pool.iterrows():
+                # 如果已經在上面警報區顯示過了，這裡就跳過，避免重複
+                is_duplicate = False
+                for alert in l3_alerts:
+                    if alert['代號'] == row['代號']: is_duplicate = True
+                
+                if not is_duplicate:
+                    render_stock_card(row)
+        
+        if not l3_alerts and not pool_results:
+            st.warning("掃描完成。目前沒有觸發 L3 警報，也沒有 10 分以上的高恐慌標的。")
+            
+    elif not pool_tickers and scan_mode != "手動輸入清單":
+        st.error("無法下載成分股名單，請稍後再試。")
+        
+else:
+    st.info("👈 請在左側選擇掃描範圍，並點擊「🚀 開始掃描」按鈕。")
